@@ -8,6 +8,8 @@ replace (
 	github.com/matryer/moq => github.com/rancher/moq v0.0.0-20190404221404-ee5226d43009
 
 	k8s.io/client-go => github.com/rancher/client-go v1.25.4-rancher1
+
+	github.com/rancher/wrangler => github.com/moio/wrangler v0.0.0-20230628215402-5feef5c34a5a
 )
 
 require (
