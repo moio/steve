@@ -124,6 +124,7 @@ func (c *Collection) Reset(schemas map[string]*types.APISchema) {
 	for _, k := range c.cache.Keys() {
 		c.cache.Remove(k)
 	}
+	logrus.Debugf("Schema cache: 0 elements")
 	c.lock.Unlock()
 	c.lock.RLock()
 	for _, f := range c.notifiers {

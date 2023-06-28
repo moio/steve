@@ -11,6 +11,7 @@ import (
 	"github.com/rancher/apiserver/pkg/types"
 	"github.com/rancher/steve/pkg/accesscontrol"
 	"github.com/rancher/steve/pkg/attributes"
+	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/authentication/user"
 )
@@ -64,12 +65,14 @@ func (c *Collection) removeOldRecords(access *accesscontrol.AccessSet, user user
 
 func (c *Collection) addToCache(access *accesscontrol.AccessSet, user user.Info, schemas *types.APISchemas) {
 	c.cache.Add(access.ID, schemas, 24*time.Hour)
+	logrus.Debugf("Schema cache: %d elements", len(c.cache.Keys()))
 	c.userCache.Add(user.GetName(), access.ID, 24*time.Hour)
 }
 
 // PurgeUserRecords removes a record from the backing LRU cache before expiry
 func (c *Collection) purgeUserRecords(id string) {
 	c.cache.Remove(id)
+	logrus.Debugf("Schema cache: %d elements", len(c.cache.Keys()))
 	c.as.PurgeUserData(id)
 }
 
