@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/rancher/apiserver/pkg/builtin"
@@ -64,9 +65,14 @@ func (c *Collection) removeOldRecords(access *accesscontrol.AccessSet, user user
 }
 
 func (c *Collection) addToCache(access *accesscontrol.AccessSet, user user.Info, schemas *types.APISchemas) {
-	c.cache.Add(access.ID, schemas, 24*time.Hour)
+	d := 24 * time.Hour
+	if e := os.Getenv("CATTLE_SCHEMA_CACHE_TTL"); e != "" {
+		d, _ = time.ParseDuration(e)
+	}
+
+	c.cache.Add(access.ID, schemas, d)
 	logrus.Debugf("Schema cache: %d elements", len(c.cache.Keys()))
-	c.userCache.Add(user.GetName(), access.ID, 24*time.Hour)
+	c.userCache.Add(user.GetName(), access.ID, d)
 }
 
 // PurgeUserRecords removes a record from the backing LRU cache before expiry

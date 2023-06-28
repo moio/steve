@@ -3,6 +3,8 @@ package schema
 import (
 	"context"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -69,14 +71,19 @@ func WrapServer(factory Factory, server *apiserver.Server) http.Handler {
 }
 
 func NewCollection(ctx context.Context, baseSchema *types.APISchemas, access accesscontrol.AccessSetLookup) *Collection {
+
+	cs := 1000
+	if e := os.Getenv("CATTLE_SCHEMA_CACHE_SIZE"); e != "" {
+		cs, _ = strconv.Atoi(e)
+	}
 	return &Collection{
 		baseSchema: baseSchema,
 		schemas:    map[string]*types.APISchema{},
 		templates:  map[string][]*Template{},
 		byGVR:      map[schema.GroupVersionResource]string{},
 		byGVK:      map[schema.GroupVersionKind]string{},
-		cache:      cache.NewLRUExpireCache(1000),
-		userCache:  cache.NewLRUExpireCache(1000),
+		cache:      cache.NewLRUExpireCache(cs),
+		userCache:  cache.NewLRUExpireCache(cs),
 		notifiers:  map[int]func(){},
 		ctx:        ctx,
 		as:         access,
