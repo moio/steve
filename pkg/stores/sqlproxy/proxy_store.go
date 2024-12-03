@@ -212,7 +212,7 @@ type Store struct {
 type CacheFactoryInitializer func() (CacheFactory, error)
 
 type CacheFactory interface {
-	CacheFor(fields [][]string, transform cache.TransformFunc, client dynamic.ResourceInterface, gvk schema.GroupVersionKind, namespaced bool) (factory.Cache, error)
+	CacheFor(fields [][]string, transform cache.TransformFunc, client dynamic.ResourceInterface, gvk schema.GroupVersionKind, namespaced bool, watchable bool) (factory.Cache, error)
 	Reset() error
 }
 
@@ -292,7 +292,7 @@ func (s *Store) initializeNamespaceCache() error {
 	// get the ns informer
 	client2 := &tablelistconvert.Client{ResourceInterface: client}
 	attrs := attributes.GVK(&nsSchema)
-	nsInformer, err := s.cacheFactory.CacheFor(fields, transformFunc, client2, attrs, false)
+	nsInformer, err := s.cacheFactory.CacheFor(fields, transformFunc, client2, attrs, false, false)
 	if err != nil {
 		return err
 	}
@@ -734,7 +734,7 @@ func (s *Store) ListByPartitions(apiOp *types.APIRequest, schema *types.APISchem
 	client2 := &tablelistconvert.Client{ResourceInterface: client}
 	attrs2 := attributes.GVK(schema)
 	ns2 := attributes.Namespaced(schema)
-	inf, err := s.cacheFactory.CacheFor(fields, transformFunc, client2, attrs2, ns2)
+	inf, err := s.cacheFactory.CacheFor(fields, transformFunc, client2, attrs2, ns2, false)
 	if err != nil {
 		return nil, 0, "", err
 	}
