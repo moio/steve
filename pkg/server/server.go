@@ -240,6 +240,8 @@ func setup(ctx context.Context, server *Server) error {
 		initializedDB := false
 
 		onSchemasHandler = func(schemas *schema.Collection, changedSchemas map[string]*types.APISchema, deletedSomething bool) error {
+			logrus.Errorf("SQL Cache: onSchemasHandler STARTS")
+			defer logrus.Errorf("SQL Cache: onSchemasHandler IS DONE")
 			resetEverything := false
 			// We need a mutex around the fieldsForSchema closure because this handler is invoked asynchronously
 			// from the server
