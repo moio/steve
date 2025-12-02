@@ -21,11 +21,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rancher/steve/pkg/sqlcache/db/logging"
 
 	"github.com/sirupsen/logrus"
 	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	// needed for drivers
 	_ "modernc.org/sqlite"
@@ -42,6 +44,14 @@ const (
 
 	debugQueryLogPathEnvVar           = "CATTLE_DEBUG_QUERY_LOG"
 	debugQueryIncludeParamsPathEnvVar = "CATTLE_DEBUG_QUERY_INCLUDE_PARAMS"
+
+	// beginTxRetries is the number of times to retry BeginTx when a SQLITE_BUSY
+	// or SQLITE_BUSY_SNAPSHOT error is returned. These errors can occur in WAL mode
+	// when starting a write transaction, as it is a two-step operation that may fail
+	// without engaging the busy handler. See https://github.com/rancher/rancher/issues/52872
+	beginTxRetries = 5
+	// beginTxRetryDelay is the initial delay between retries, which doubles with each attempt
+	beginTxRetryDelay = 5 * time.Millisecond
 )
 
 // Client defines a database client that provides encrypting, decrypting, and database resetting
@@ -78,12 +88,7 @@ func (c *client) WithTransaction(ctx context.Context, forWriting bool, f WithTra
 }
 
 func (c *client) withTransaction(ctx context.Context, forWriting bool, f WithTransactionFunction) error {
-	c.connLock.RLock()
-	// note: this assumes _txlock=immediate in the connection string, see NewConnection
-	tx, err := c.conn.BeginTx(ctx, &sql.TxOptions{
-		ReadOnly: !forWriting,
-	})
-	c.connLock.RUnlock()
+	tx, err := c.beginTxWithRetry(ctx, forWriting)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
@@ -100,6 +105,56 @@ func (c *client) withTransaction(ctx context.Context, forWriting bool, f WithTra
 		return err
 	}
 	return nil
+}
+
+// beginTxWithRetry attempts to begin a transaction, retrying on SQLITE_BUSY and
+// SQLITE_BUSY_SNAPSHOT errors. These errors can occur in WAL mode when starting
+// a write transaction without engaging the busy handler.
+// See https://github.com/rancher/rancher/issues/52872
+func (c *client) beginTxWithRetry(ctx context.Context, forWriting bool) (*sql.Tx, error) {
+	delay := beginTxRetryDelay
+	var lastErr error
+
+	for attempt := range beginTxRetries {
+		c.connLock.RLock()
+		// note: this assumes _txlock=immediate in the connection string, see NewConnection
+		tx, err := c.conn.BeginTx(ctx, &sql.TxOptions{
+			ReadOnly: !forWriting,
+		})
+		c.connLock.RUnlock()
+
+		if err == nil {
+			return tx, nil
+		}
+
+		if !isRetryableBusyError(err) {
+			return nil, err
+		}
+
+		lastErr = err
+		logrus.Debugf("BeginTx returned busy error (attempt %d/%d): %v, retrying in %v", attempt+1, beginTxRetries, err, delay)
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+			delay *= 2
+		}
+	}
+
+	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
+}
+
+// isRetryableBusyError checks if the error is a SQLITE_BUSY or SQLITE_BUSY_SNAPSHOT error
+// that should be retried. These errors can occur in WAL mode when BeginTx fails without
+// engaging the busy handler.
+func isRetryableBusyError(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	code := sqliteErr.Code()
+	return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_BUSY_SNAPSHOT
 }
 
 func (c *client) commit(ctx context.Context, tx *sql.Tx) error {

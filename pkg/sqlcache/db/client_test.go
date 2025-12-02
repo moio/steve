@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"math"
@@ -535,6 +536,82 @@ func TestCommit(t *testing.T) {
 
 func TestRollback(t *testing.T) {
 
+}
+
+func TestIsRetryableBusyError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+		{
+			name:     "generic error",
+			err:      errors.New("generic error"),
+			expected: false,
+		},
+		{
+			name:     "wrapped generic error",
+			err:      fmt.Errorf("wrapped: %w", errors.New("generic error")),
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isRetryableBusyError(tt.err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestBeginTxWithRetry(t *testing.T) {
+	type testCase struct {
+		description string
+		test        func(t *testing.T)
+	}
+
+	var tests []testCase
+
+	tests = append(tests, testCase{description: "BeginTx does not retry on non-sqlite error", test: func(t *testing.T) {
+		c := SetupMockConnection(t)
+		client := SetupClient(t, c, nil, nil)
+
+		// Mock failing BeginTx with non-retryable error - should only be called once
+		c.EXPECT().BeginTx(gomock.Any(), gomock.Any()).Return(nil, errors.New("non-retryable error")).Times(1)
+
+		err := client.WithTransaction(context.Background(), false, func(tx TxClient) error {
+			return nil
+		})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "non-retryable error")
+	}})
+
+	tests = append(tests, testCase{description: "BeginTx respects context cancellation", test: func(t *testing.T) {
+		c := SetupMockConnection(t)
+		client := SetupClient(t, c, nil, nil)
+
+		// Create a canceled context
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		// Mock failing BeginTx - it should return immediately due to canceled context
+		c.EXPECT().BeginTx(gomock.Any(), gomock.Any()).Return(nil, context.Canceled).AnyTimes()
+
+		err := client.WithTransaction(ctx, false, func(tx TxClient) error {
+			return nil
+		})
+		assert.Error(t, err)
+	}})
+
+	t.Parallel()
+	for _, test := range tests {
+		t.Run(test.description, func(t *testing.T) { test.test(t) })
+	}
 }
 
 func SetupMockConnection(t *testing.T) *MockConnection {
