@@ -115,7 +115,7 @@ func (c *client) beginTxWithRetry(ctx context.Context, forWriting bool) (*sql.Tx
 	delay := beginTxRetryDelay
 	var lastErr error
 
-	for attempt := range beginTxRetries {
+	for attempt := 0; attempt < beginTxRetries; attempt++ {
 		c.connLock.RLock()
 		// note: this assumes _txlock=immediate in the connection string, see NewConnection
 		tx, err := c.conn.BeginTx(ctx, &sql.TxOptions{
