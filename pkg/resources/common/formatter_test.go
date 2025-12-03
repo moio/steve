@@ -1373,7 +1373,7 @@ func TestFormatterAddsNamespaceCreatePermissionInProjectContext(t *testing.T) {
 	tests := []struct {
 		name                  string
 		topLevelPermissions   []string
-		namespacePermissions  []accesscontrol.Access // permissions for namespace resource
+		namespacePermissions  []accesscontrol.Access // permissions to create/modify the 'namespaces' resource (core API group)
 		schema                *types.APISchema
 		apiObject             types.APIObject
 		checkPermissions      []string
