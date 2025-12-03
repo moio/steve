@@ -1363,3 +1363,240 @@ func TestFormatterAddsResourcePermissions(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatterAddsNamespaceCreatePermissionInProjectContext(t *testing.T) {
+	const (
+		clusterid = "clusterid"
+		projectid = "projectid"
+	)
+
+	tests := []struct {
+		name                  string
+		topLevelPermissions   []string
+		namespacePermissions  []accesscontrol.Access // permissions for namespace resource
+		schema                *types.APISchema
+		apiObject             types.APIObject
+		checkPermissions      []string
+		wantNamespacePerms    map[string]string
+		wantNamespacePermNil  bool
+	}{
+		{
+			name:                "namespace create permission from project-level rolebinding",
+			topLevelPermissions: []string{"get", "update"},
+			namespacePermissions: []accesscontrol.Access{
+				// When a user has a RoleBinding in a project namespace that grants
+				// namespace creation permission, the AccessSet stores it with:
+				// - Namespace = All (because namespaces are cluster-scoped)
+				// - ResourceName = project namespace (clusterid-projectid)
+				{
+					Namespace:    accesscontrol.All,
+					ResourceName: clusterid + "-" + projectid,
+				},
+			},
+			schema: &types.APISchema{
+				Schema: &schemas.Schema{
+					ID: clusterid + "/" + projectid,
+					Attributes: map[string]interface{}{
+						"group":    "management.cattle.io",
+						"version":  "v3",
+						"resource": "projects",
+					},
+				},
+			},
+			apiObject: types.APIObject{
+				ID: clusterid + "/" + projectid,
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{},
+				},
+			},
+			checkPermissions: []string{"namespace"},
+			wantNamespacePerms: map[string]string{
+				"create": "/api/v1/namespaces/clusterid-projectid/namespaces",
+			},
+		},
+		{
+			name:                "namespace create permission from cluster-level rolebinding (All/All)",
+			topLevelPermissions: []string{"get", "update"},
+			namespacePermissions: []accesscontrol.Access{
+				// When a user has a ClusterRoleBinding that grants namespace creation permission
+				{
+					Namespace:    accesscontrol.All,
+					ResourceName: accesscontrol.All,
+				},
+			},
+			schema: &types.APISchema{
+				Schema: &schemas.Schema{
+					ID: clusterid + "/" + projectid,
+					Attributes: map[string]interface{}{
+						"group":    "management.cattle.io",
+						"version":  "v3",
+						"resource": "projects",
+					},
+				},
+			},
+			apiObject: types.APIObject{
+				ID: clusterid + "/" + projectid,
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{},
+				},
+			},
+			checkPermissions: []string{"namespace"},
+			wantNamespacePerms: map[string]string{
+				"create": "/api/v1/namespaces/clusterid-projectid/namespaces",
+			},
+		},
+		{
+			name:                 "no namespace create permission when user has read-only access to project",
+			topLevelPermissions:  []string{"get"},
+			namespacePermissions: []accesscontrol.Access{}, // no namespace create permissions
+			schema: &types.APISchema{
+				Schema: &schemas.Schema{
+					ID: clusterid + "/" + projectid,
+					Attributes: map[string]interface{}{
+						"group":    "management.cattle.io",
+						"version":  "v3",
+						"resource": "projects",
+					},
+				},
+			},
+			apiObject: types.APIObject{
+				ID: clusterid + "/" + projectid,
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{},
+				},
+			},
+			checkPermissions:     []string{"namespace"},
+			wantNamespacePermNil: true,
+		},
+		{
+			name:                "namespace create permission from different project should not grant access",
+			topLevelPermissions: []string{"get"},
+			namespacePermissions: []accesscontrol.Access{
+				// User has create permission in a different project
+				{
+					Namespace:    accesscontrol.All,
+					ResourceName: "clusterid-differentproject",
+				},
+			},
+			schema: &types.APISchema{
+				Schema: &schemas.Schema{
+					ID: clusterid + "/" + projectid,
+					Attributes: map[string]interface{}{
+						"group":    "management.cattle.io",
+						"version":  "v3",
+						"resource": "projects",
+					},
+				},
+			},
+			apiObject: types.APIObject{
+				ID: clusterid + "/" + projectid,
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{},
+				},
+			},
+			checkPermissions:     []string{"namespace"},
+			wantNamespacePermNil: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			defaultUserInfo := user.DefaultInfo{}
+
+			ctrl := gomock.NewController(t)
+			asl := fake.NewMockAccessSetLookup(ctrl)
+			accessSet := accesscontrol.AccessSet{}
+
+			// Set up the AccessSet for the top level resource (project)
+			if len(test.topLevelPermissions) > 0 {
+				gvr := attributes.GVR(test.schema)
+				objMeta, _ := meta.Accessor(test.apiObject.Object)
+				resource := accesscontrol.Access{
+					Namespace:    objMeta.GetNamespace(),
+					ResourceName: objMeta.GetName(),
+				}
+
+				for _, verb := range test.topLevelPermissions {
+					accessSet.Add(verb, gvr.GroupResource(), resource)
+				}
+			}
+
+			// Set up the AccessSet for namespace permissions
+			namespaceGR := schema2.GroupResource{Group: "", Resource: "namespaces"}
+			for _, access := range test.namespacePermissions {
+				accessSet.Add("create", namespaceGR, access)
+			}
+
+			ctx := context.Background()
+			ctx = request.WithUser(ctx, &defaultUserInfo)
+			httpRequest, _ := http.NewRequestWithContext(ctx, "", "", bytes.NewBuffer([]byte{}))
+
+			req := &types.APIRequest{
+				Request:    httpRequest,
+				URLBuilder: &urlbuilder.DefaultURLBuilder{},
+				Query: url.Values{
+					"checkPermissions": {strings.Join(test.checkPermissions, ",")},
+				},
+				Schemas: types.EmptyAPISchemas(),
+			}
+
+			// Add namespace schema
+			req.Schemas.MustAddSchema(types.APISchema{
+				Schema: &schemas.Schema{
+					ID:                "namespace",
+					CollectionMethods: []string{"get"},
+					ResourceMethods:   []string{"get"},
+					Attributes: map[string]interface{}{
+						"group":    "",
+						"resource": "namespaces",
+						"version":  "v1",
+					},
+				},
+			})
+
+			resource := &types.RawResource{
+				Schema:    test.schema,
+				APIObject: test.apiObject,
+				Links:     map[string]string{},
+			}
+			fakeCache := &common.FakeSummaryCache{
+				SummarizedObject: &summary.SummarizedObject{},
+			}
+
+			asl.EXPECT().AccessFor(&defaultUserInfo).Return(&accessSet).AnyTimes()
+
+			formatter := formatter(fakeCache, asl, TemplateOptions{InSQLMode: false})
+			formatter(req, resource)
+
+			// Extract the resultant resourcePermissions
+			u, ok := resource.APIObject.Object.(*unstructured.Unstructured)
+			require.True(t, ok, "APIObject.Object is not Unstructured")
+
+			rawPerms, ok := u.Object["resourcePermissions"]
+			if test.wantNamespacePermNil {
+				if ok {
+					permMap, ok := rawPerms.(map[string]map[string]string)
+					if ok {
+						_, hasNamespace := permMap["namespace"]
+						require.False(t, hasNamespace, "namespace permissions should not be present")
+					}
+				}
+				return
+			}
+
+			require.True(t, ok, "resourcePermissions field missing")
+			permMap, ok := rawPerms.(map[string]map[string]string)
+			require.True(t, ok, "resourcePermissions is not map[string]map[string]string")
+
+			nsPerms, ok := permMap["namespace"]
+			require.True(t, ok, "namespace permissions missing")
+
+			for verb, wantURL := range test.wantNamespacePerms {
+				actualURL, ok := nsPerms[verb]
+				require.True(t, ok, "verb %s missing from namespace permissions", verb)
+				require.Equal(t, wantURL, actualURL, "URL for verb %s", verb)
+			}
+		})
+	}
+}
