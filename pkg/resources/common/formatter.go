@@ -201,6 +201,16 @@ func formatter(summarycache common.SummaryCache, asl accesscontrol.AccessSetLook
 					if accessSet.Grants(verb, gr, ns, "") {
 						url := request.URLBuilder.RelativeToRoot(buildBasePath(gvr, ns, ""))
 						perms[verb] = url
+					} else if verb == "create" && gr.Group == "" && gr.Resource == "namespaces" && ns != "" {
+						// Special handling for namespace creation in project context.
+						// When a user has a RoleBinding in a project namespace that grants
+						// namespace creation permission, the AccessSet stores it with the
+						// project namespace as the ResourceName (not the namespace field).
+						// We need to check both: cluster-wide permission OR project-specific permission.
+						if accessSet.Grants(verb, gr, "", ns) {
+							url := request.URLBuilder.RelativeToRoot(buildBasePath(gvr, ns, ""))
+							perms[verb] = url
+						}
 					}
 				}
 				if len(perms) > 0 {
