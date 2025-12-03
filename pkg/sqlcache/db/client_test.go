@@ -20,6 +20,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // Mocks for this test are generated with the following command.
@@ -538,6 +540,24 @@ func TestRollback(t *testing.T) {
 
 }
 
+// newSqliteBusyError creates a sqlite.Error with the given code using unsafe.
+// This is needed because sqlite.Error has private fields.
+func newSqliteBusyError(code int) error {
+	errType := reflect.TypeOf((*sqlite.Error)(nil)).Elem()
+	errValue := reflect.New(errType).Elem()
+	
+	// Use unsafe to set unexported fields
+	msgField := errValue.FieldByName("msg")
+	msgFieldPtr := reflect.NewAt(msgField.Type(), msgField.Addr().UnsafePointer()).Elem()
+	msgFieldPtr.SetString("database is busy")
+	
+	codeField := errValue.FieldByName("code")
+	codeFieldPtr := reflect.NewAt(codeField.Type(), codeField.Addr().UnsafePointer()).Elem()
+	codeFieldPtr.SetInt(int64(code))
+	
+	return errValue.Addr().Interface().(error)
+}
+
 func TestIsRetryableBusyError(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -557,6 +577,26 @@ func TestIsRetryableBusyError(t *testing.T) {
 		{
 			name:     "wrapped generic error",
 			err:      fmt.Errorf("wrapped: %w", errors.New("generic error")),
+			expected: false,
+		},
+		{
+			name:     "SQLITE_BUSY error",
+			err:      newSqliteBusyError(sqlite3.SQLITE_BUSY),
+			expected: true,
+		},
+		{
+			name:     "SQLITE_BUSY_SNAPSHOT error",
+			err:      newSqliteBusyError(sqlite3.SQLITE_BUSY_SNAPSHOT),
+			expected: true,
+		},
+		{
+			name:     "wrapped SQLITE_BUSY error",
+			err:      fmt.Errorf("wrapped: %w", newSqliteBusyError(sqlite3.SQLITE_BUSY)),
+			expected: true,
+		},
+		{
+			name:     "other sqlite error code",
+			err:      newSqliteBusyError(1), // SQLITE_ERROR
 			expected: false,
 		},
 	}
@@ -606,6 +646,38 @@ func TestBeginTxWithRetry(t *testing.T) {
 			return nil
 		})
 		assert.Error(t, err)
+	}})
+
+	tests = append(tests, testCase{description: "BeginTx exhausts retries on persistent SQLITE_BUSY", test: func(t *testing.T) {
+		c := SetupMockConnection(t)
+		client := SetupClient(t, c, nil, nil)
+
+		busyErr := newSqliteBusyError(sqlite3.SQLITE_BUSY)
+
+		// All calls return busy error - should be called exactly beginTxRetries times
+		c.EXPECT().BeginTx(gomock.Any(), gomock.Any()).Return(nil, busyErr).Times(beginTxRetries)
+
+		err := client.WithTransaction(context.Background(), false, func(tx TxClient) error {
+			return nil
+		})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "max retries exceeded")
+	}})
+
+	tests = append(tests, testCase{description: "BeginTx retries multiple times on SQLITE_BUSY_SNAPSHOT", test: func(t *testing.T) {
+		c := SetupMockConnection(t)
+		client := SetupClient(t, c, nil, nil)
+
+		busyErr := newSqliteBusyError(sqlite3.SQLITE_BUSY_SNAPSHOT)
+
+		// Verify multiple retries happen - should be called exactly beginTxRetries times
+		c.EXPECT().BeginTx(gomock.Any(), gomock.Any()).Return(nil, busyErr).Times(beginTxRetries)
+
+		err := client.WithTransaction(context.Background(), false, func(tx TxClient) error {
+			return nil
+		})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "max retries exceeded")
 	}})
 
 	t.Parallel()

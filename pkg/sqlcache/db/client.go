@@ -50,8 +50,10 @@ const (
 	// when starting a write transaction, as it is a two-step operation that may fail
 	// without engaging the busy handler. See https://github.com/rancher/rancher/issues/52872
 	beginTxRetries = 5
-	// beginTxRetryDelay is the initial delay between retries, which doubles with each attempt
+	// beginTxRetryDelay is the initial delay between retries
 	beginTxRetryDelay = 5 * time.Millisecond
+	// beginTxRetryBackoffFactor is the multiplier applied to the delay after each retry
+	beginTxRetryBackoffFactor = 2
 )
 
 // Client defines a database client that provides encrypting, decrypting, and database resetting
@@ -110,6 +112,7 @@ func (c *client) withTransaction(ctx context.Context, forWriting bool, f WithTra
 // beginTxWithRetry attempts to begin a transaction, retrying on SQLITE_BUSY and
 // SQLITE_BUSY_SNAPSHOT errors. These errors can occur in WAL mode when starting
 // a write transaction without engaging the busy handler.
+// The connLock is held during each BeginTx attempt to prevent concurrent connection changes.
 // See https://github.com/rancher/rancher/issues/52872
 func (c *client) beginTxWithRetry(ctx context.Context, forWriting bool) (*sql.Tx, error) {
 	delay := beginTxRetryDelay
@@ -138,16 +141,14 @@ func (c *client) beginTxWithRetry(ctx context.Context, forWriting bool) (*sql.Tx
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(delay):
-			delay *= 2
+			delay *= beginTxRetryBackoffFactor
 		}
 	}
 
 	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
 }
 
-// isRetryableBusyError checks if the error is a SQLITE_BUSY or SQLITE_BUSY_SNAPSHOT error
-// that should be retried. These errors can occur in WAL mode when BeginTx fails without
-// engaging the busy handler.
+// isRetryableBusyError returns true if the error is a retryable SQLite busy error.
 func isRetryableBusyError(err error) bool {
 	var sqliteErr *sqlite.Error
 	if !errors.As(err, &sqliteErr) {
